@@ -63,6 +63,12 @@ WEIGHTS = {
     "vlm_verifier": 0.20,
 }
 
+GEOMETRY_CHAMFER_KEYS = (
+    "pre_icp_chamfer",
+    "aligned_go_icp_chamfer",
+    "aligned_icp_chamfer",
+)
+
 
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     value = os.environ.get(name)
@@ -135,6 +141,43 @@ def _score_from_loss(value: Optional[float]) -> float:
     if value is None:
         return 0.0
     return float(1.0 / (1.0 + max(0.0, float(value))))
+
+
+def _proposal_chamfer(proposal_scores: Mapping[str, Any]) -> Optional[float]:
+    values = [
+        float(proposal_scores[key])
+        for key in GEOMETRY_CHAMFER_KEYS
+        if proposal_scores.get(key) is not None
+    ]
+    return min(values) if values else None
+
+
+def _summarize_3d_intermediate(intermediate_scores: Mapping[str, Any]) -> Dict[str, Any]:
+    chamfer_values: List[float] = []
+    n_clip_values: List[float] = []
+    non_executable_count = 0
+    non_executable_details: List[Dict[str, Any]] = []
+
+    for task_instance_scores in intermediate_scores.values():
+        if not isinstance(task_instance_scores, Mapping):
+            continue
+        non_executable_count += int(task_instance_scores.get("non_executable_count", 0) or 0)
+        details = task_instance_scores.get("non_executable_details") or []
+        if isinstance(details, list):
+            non_executable_details.extend(details)
+        for _, proposal_scores in _completed_proposal_items(task_instance_scores):
+            proposal_chamfer = _proposal_chamfer(proposal_scores)
+            if proposal_chamfer is not None:
+                chamfer_values.append(proposal_chamfer)
+            if proposal_scores.get("avg_aligned_n_clip") is not None:
+                n_clip_values.append(float(proposal_scores["avg_aligned_n_clip"]))
+
+    return {
+        "chamfer": _mean(chamfer_values),
+        "n_clip": _mean(n_clip_values),
+        "non_executable_count": non_executable_count,
+        "non_executable_details": non_executable_details,
+    }
 
 
 def calculate_prompt_features(prompt: str) -> Tuple[float, float]:
@@ -435,18 +478,18 @@ def _evaluate_3d(program_path: str) -> Tuple[Dict[str, float], Dict[str, str]]:
     eval_dir = cache_dir / "eval_renders_3d"
     eval_dir.mkdir(parents=True, exist_ok=True)
     summary_path = eval_dir / "geometry_scores_3d.json"
+    intermediate_path = eval_dir / "intermediate_scores_3d.json"
     if summary_path.is_file():
         geometry_summary = _load_json(str(summary_path))
+        if geometry_summary.get("chamfer") is None and intermediate_path.is_file():
+            geometry_summary = _summarize_3d_intermediate(_load_json(str(intermediate_path)))
+            _save_json(str(summary_path), geometry_summary)
     else:
         geometry_entries = _geometry_entries(metadata)
         if not geometry_entries:
             raise ValueError(f"No geometry entries found in {metadata_path}.")
 
-        chamfer_values: List[float] = []
-        n_clip_values: List[float] = []
         intermediate_scores: Dict[str, Any] = {}
-        non_executable_count = 0
-        non_executable_details: List[Dict[str, Any]] = []
 
         for task_instance, instance_info in geometry_entries.items():
             normalized_instance_info = _normalize_instance_info_paths(instance_info)
@@ -480,23 +523,10 @@ def _evaluate_3d(program_path: str) -> Tuple[Dict[str, float], Dict[str, str]]:
             task_instance_scores["non_executable_details"] = instance_non_exec_details
             _save_json(str(task_instance_dir / "score_3d.json"), task_instance_scores)
             intermediate_scores[task_instance] = task_instance_scores
-            non_executable_count += instance_non_exec
-            non_executable_details.extend(instance_non_exec_details)
 
-            for _, proposal_scores in _completed_proposal_items(task_instance_scores):
-                if proposal_scores.get("chamfer") is not None:
-                    chamfer_values.append(float(proposal_scores["chamfer"]))
-                if proposal_scores.get("avg_aligned_n_clip") is not None:
-                    n_clip_values.append(float(proposal_scores["avg_aligned_n_clip"]))
-
-        geometry_summary = {
-            "chamfer": _mean(chamfer_values),
-            "n_clip": _mean(n_clip_values),
-            "non_executable_count": non_executable_count,
-            "non_executable_details": non_executable_details,
-        }
+        geometry_summary = _summarize_3d_intermediate(intermediate_scores)
         _save_json(str(summary_path), geometry_summary)
-        _save_json(str(eval_dir / "intermediate_scores_3d.json"), intermediate_scores)
+        _save_json(str(intermediate_path), intermediate_scores)
 
     chamfer = geometry_summary.get("chamfer")
     n_clip = geometry_summary.get("n_clip")
@@ -618,6 +648,25 @@ def _resolve_project_path(path_value: str) -> Path:
     return path if path.is_absolute() else PROJECT_ROOT / path
 
 
+def _first_existing_candidate_image(instance_info: Mapping[str, Any]) -> Optional[str]:
+    candidate_values = []
+    selected_render_path = instance_info.get("selected_render_path")
+    if selected_render_path:
+        candidate_values.append(selected_render_path)
+    candidate_values.extend(instance_info.get("proposal_renders_paths") or [])
+
+    for value in candidate_values:
+        path = _resolve_project_path(value)
+        if path.is_file():
+            return str(path)
+        if path.is_dir():
+            for pattern in ("*.png", "*.jpg", "*.jpeg"):
+                matches = sorted(path.glob(pattern))
+                if matches:
+                    return str(matches[0])
+    return None
+
+
 def _verifier_scores(program_path: str) -> Tuple[float, Dict[str, str]]:
     verifier_type = _env("EVOLVE_INFERENCE_VERIFIER_TYPE")
     if not verifier_type:
@@ -635,9 +684,8 @@ def _verifier_scores(program_path: str) -> Tuple[float, Dict[str, str]]:
     zero_scored_instances: List[str] = []
     for task_instance, instance_info in geometry_entries.items():
         target_path = _first_existing_target_image(instance_info)
-        candidate_value = instance_info.get("selected_render_path")
-        candidate_path = _resolve_project_path(candidate_value) if candidate_value else None
-        if not target_path or candidate_path is None or not candidate_path.is_file():
+        candidate_path = _first_existing_candidate_image(instance_info)
+        if not target_path or candidate_path is None:
             scores.append(0.0)
             zero_scored_instances.append(task_instance)
             continue

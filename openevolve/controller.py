@@ -3,6 +3,8 @@ Main controller for OpenEvolve
 """
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import shutil
@@ -438,6 +440,77 @@ class OpenEvolve:
             f"(Δ: {improvement_str})"
         )
 
+    def _copy_evaluator_cache_to_checkpoint(self, checkpoint_path: str) -> None:
+        """
+        Copy evaluator cache entries for checkpoint programs into the checkpoint.
+
+        3D-CoT's inference prompt evaluator stores candidate evaluation artifacts
+        under EVOLVE_INFERENCE_CACHE_DIR/<sha256(program.code)[:16]>/.
+        """
+        cache_root = os.environ.get("EVOLVE_INFERENCE_CACHE_DIR")
+        if not cache_root:
+            return
+
+        cache_root_path = Path(cache_root).expanduser().resolve()
+        if not cache_root_path.is_dir():
+            logger.debug(f"Evaluator cache directory does not exist, skipping copy: {cache_root_path}")
+            return
+
+        dest_root = Path(checkpoint_path) / "evaluation_cache"
+        index_path = Path(checkpoint_path) / "evaluation_cache_index.json"
+        if dest_root.exists():
+            shutil.rmtree(dest_root)
+        dest_root.mkdir(parents=True, exist_ok=True)
+
+        index = {
+            "source_cache_root": str(cache_root_path),
+            "hash_algorithm": "sha256(program.code)[:16]",
+            "entries": [],
+        }
+        copied_count = 0
+
+        for program in self.database.programs.values():
+            prompt_hash = hashlib.sha256(program.code.encode("utf-8")).hexdigest()[:16]
+            candidate_sources = [cache_root_path / prompt_hash]
+            if program.artifacts_json:
+                try:
+                    artifacts = json.loads(program.artifacts_json)
+                    metadata_path = artifacts.get("metadata_path")
+                    if metadata_path:
+                        artifact_cache_dir = Path(metadata_path).expanduser().resolve().parent.parent
+                        if artifact_cache_dir.name == prompt_hash:
+                            candidate_sources.append(artifact_cache_dir)
+                except (TypeError, ValueError, OSError):
+                    logger.debug(f"Could not parse artifact cache path for program {program.id}")
+
+            dst = dest_root / prompt_hash
+            entry = {
+                "program_id": program.id,
+                "prompt_hash": prompt_hash,
+                "source": str(candidate_sources[0]),
+                "candidate_sources": [str(src) for src in candidate_sources],
+                "destination": str(dst),
+                "copied": False,
+            }
+
+            for src in candidate_sources:
+                if src.is_dir():
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+                    entry["source"] = str(src)
+                    entry["copied"] = True
+                    copied_count += 1
+                    break
+
+            index["entries"].append(entry)
+
+        with open(index_path, "w") as f:
+            json.dump(index, f, indent=2)
+
+        logger.info(
+            f"Copied {copied_count}/{len(index['entries'])} evaluator cache entries "
+            f"to {dest_root}"
+        )
+
     def _save_checkpoint(self, iteration: int) -> None:
         """
         Save a checkpoint
@@ -471,8 +544,6 @@ class OpenEvolve:
             # Save metrics
             best_program_info_path = os.path.join(checkpoint_path, "best_program_info.json")
             with open(best_program_info_path, "w") as f:
-                import json
-
                 json.dump(
                     {
                         "id": best_program.id,
@@ -492,6 +563,8 @@ class OpenEvolve:
                 f"Saved best program at checkpoint {iteration} with metrics: "
                 f"{format_metrics_safe(best_program.metrics)}"
             )
+
+        self._copy_evaluator_cache_to_checkpoint(checkpoint_path)
 
         logger.info(f"Saved checkpoint at iteration {iteration} to {checkpoint_path}")
 
