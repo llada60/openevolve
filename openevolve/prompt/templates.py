@@ -203,16 +203,29 @@ class TemplateManager:
 
         # Load .txt templates
         for txt_file in directory.glob("*.txt"):
+            if txt_file.name.startswith("."):
+                logger.debug(f"Skipping hidden template file: {txt_file}")
+                continue
             template_name = txt_file.stem
-            with open(txt_file, "r") as f:
-                self.templates[template_name] = f.read()
+            try:
+                with open(txt_file, "r", encoding="utf-8") as f:
+                    self.templates[template_name] = f.read()
+            except UnicodeDecodeError as e:
+                raise ValueError(
+                    f"Template file '{txt_file}' must be valid UTF-8 text"
+                ) from e
 
         # Load fragments.json if exists
         fragments_file = directory / "fragments.json"
         if fragments_file.exists():
-            with open(fragments_file, "r") as f:
-                loaded_fragments = json.load(f)
-                self.fragments.update(loaded_fragments)
+            try:
+                with open(fragments_file, "r", encoding="utf-8") as f:
+                    loaded_fragments = json.load(f)
+                    self.fragments.update(loaded_fragments)
+            except UnicodeDecodeError as e:
+                raise ValueError(
+                    f"Fragment file '{fragments_file}' must be valid UTF-8 text"
+                ) from e
 
     def get_template(self, name: str) -> str:
         """Get a template by name"""

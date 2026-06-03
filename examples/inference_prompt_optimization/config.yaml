@@ -1,0 +1,53 @@
+# OpenEvolve configuration for optimizing the one-shot geometry generator prompt.
+
+max_iterations: 50
+checkpoint_interval: 5
+log_level: "INFO"
+language: "text"
+diff_based_evolution: false
+max_code_length: 30000
+
+llm:
+  api_base: "${OPENEVOLVE_API_BASE}"
+  models:
+    - name: "gpt-4o-mini"
+      weight: 1.0
+  temperature: 0.7
+  max_tokens: 32768
+  timeout: 120
+  retries: 3
+
+prompt:
+  template_dir: "templates"
+  num_top_programs: 3
+  num_diverse_programs: 2
+  include_artifacts: true
+  system_message: |
+    You are an expert prompt engineer optimizing the generator prompt used by a visual language model that writes Blender/Infinigen Python asset code from target render images.
+    Improve the prompt's ability to produce executable, geometrically accurate code while preserving the required text placeholders.
+    Return only complete replacement prompt text when asked.
+
+database:
+  population_size: 30
+  archive_size: 200
+  num_islands: 3
+  feature_dimensions:
+    - "prompt_length"
+    - "executable"
+    - "reasoning_strategy"
+    - "chamfer_score"
+    - "n_clip_score"
+  feature_bins: 10
+  elite_selection_ratio: 0.4
+  exploration_ratio: 0.3
+  exploitation_ratio: 0.3
+  migration_interval: 10
+  migration_rate: 0.1
+
+evaluator:
+  timeout: 7200
+  max_retries: 0
+  parallel_evaluations: 1
+  cascade_evaluation: true
+  cascade_thresholds: [0.01, 0.25]
+  use_llm_feedback: false

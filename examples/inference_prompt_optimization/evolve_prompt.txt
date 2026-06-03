@@ -1,0 +1,114 @@
+You are generating a standalone Infinigen asset factory from multimodal geometry references.
+
+Target asset metadata:
+Generate an Infinigen asset that matches the target images. Each modality provides {num_views} aligned camera views.
+
+You will receive target asset reference images after this instruction. The images may include RGB renders, grey-shaded renders, depth maps, and normal maps. Treat grey, depth, and normal references as the primary evidence for geometry; use RGB only for silhouette, color, and material hints when it is available.
+
+Study all provided RGB, grey, depth, and normal references together across every aligned view. Use cross-view consistency to infer the target asset's primitive structure, proportions, symmetry, occluded parts, large geometric components, surface orientation, and visible material cues.
+
+Follow these code generation rules exactly:
+
+```text
+# Code Generation Rules
+
+## Allowed scope
+
+- Only use helpers listed in `helper_manual.md`.
+- Do not import `infinigen.assets.*`.
+- Do not call helpers that are not listed in `helper_manual.md`.
+- Standard Python, `numpy`, and `bpy` property assignment are allowed only to glue together the listed helpers.
+
+## Factory structure
+
+- Define one class that subclasses `AssetFactory`.
+- The factory class name must be exactly `MyAssetFactory`.
+- Keep imports small and stable.
+- Put almost all generation logic inside `create_asset`.
+- `create_asset` must return one `bpy.types.Object`.
+
+## Object return rules
+
+- Single-part assets may return one mesh object directly.
+- Multi-part assets must either:
+  - join mesh parts into one mesh object, or
+  - parent all parts under one root object and return the root.
+- Prefer joining simple mesh parts unless separate hierarchy is required.
+
+## Determinism
+
+- All randomness must be controlled by `factory_seed`.
+- Prefer `self.rng = np.random.default_rng(factory_seed)` and sample from `self.rng`.
+- If using helpers backed by `np.random`, call them only inside the `AssetFactory` execution path.
+- The same seed must produce the same result.
+
+## Scene safety
+
+- Avoid depending on current scene contents.
+- Avoid selecting unrelated objects.
+- Avoid absolute paths.
+- Avoid file I/O.
+- Avoid assumptions about existing collections, materials, or assets beyond the local factory code.
+
+## Geometry style
+
+- Prefer simple primitives plus transforms.
+- Prefer a small number of modifiers: `SUBSURF`, `BEVEL`, `SOLIDIFY`, `DISPLACE`, or one simple geometry-nodes deformation.
+- Prefer a small number of materials with simple shader graphs.
+- Keep topology and node graphs modest.
+
+## Material style
+
+- Use `surface.add_material` with a small shader function.
+- Prefer `Principled BSDF` for opaque objects.
+- Use `Emission` only when the object should visibly glow, such as a lamp bulb.
+
+## Geometry nodes style
+
+- If using `surface.add_geomod`, keep the node graph short.
+- Typical pattern: `GroupInput -> InputPosition/Normal -> Noise/Math -> SetPosition -> GroupOutput`.
+- Avoid deep node-group nesting.
+
+## Transform and assembly
+
+- Set `location`, `rotation_euler`, and `scale` explicitly.
+- Apply transforms when later modifiers or joining depend on final dimensions.
+- Name the final returned object.
+
+## Error avoidance
+
+- Do not return Python lists.
+- Do not return `None`.
+- Do not leave loose temporary helper objects in the scene unless they are joined or parented into the asset.
+- Do not rely on `infinigen/assets/*` helper functions, samplers, or materials.
+```
+
+Required code skeleton shape:
+
+```python
+{code_skeleton}
+```
+
+Allowed helpers:
+
+```text
+{helper_manual}
+```
+
+Reference example:
+
+```python
+{reference_example}
+```
+
+Task:
+1. Infer the asset as a compact set of stable primitives before writing code.
+2. Match the large silhouette, proportions, part layout, symmetry, and depth/normal structure before adding surface detail.
+3. Output a full Python script that defines `class MyAssetFactory(AssetFactory):`.
+4. Keep imports small and stable.
+5. Use only helpers that are allowed by the helper manual above.
+6. Put almost all generation logic inside `create_asset`.
+7. Return exactly one Blender object.
+8. Do not import `infinigen.assets.*`.
+9. Keep the result deterministic with `self.rng = np.random.default_rng(factory_seed)`.
+10. Answer with exactly one complete ```python``` block that can replace the current file.

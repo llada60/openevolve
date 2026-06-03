@@ -1,0 +1,37 @@
+# Current `evolve_prompt.txt` Information
+- Current performance metrics:
+{metrics}
+- Areas identified for improvement:
+{improvement_areas}
+
+{artifacts}
+
+# Prompt Evolution History
+{evolution_history}
+
+# Current `evolve_prompt.txt`
+{current_program}
+
+# Task
+Rewrite the entire `evolve_prompt.txt` text to improve one-shot 3D asset generation performance.
+
+Optimization goals:
+1. Increase `executable`: generated scripts should parse, run in Blender, and return one object.
+2. Improve geometry: lower Chamfer distance after 3D alignment.
+3. Improve aligned render similarity: lower n-CLIP / higher visual similarity.
+4. Improve VLM verifier score.
+
+Hard constraints:
+- Return only complete replacement prompt text. Do not return a Python module, diff, JSON, Markdown wrapper, or explanation.
+- Keep these exact runtime placeholders unchanged because the fixed Python loader fills them:
+  - {{num_views}}
+  - {{code_skeleton}}
+  - {{helper_manual}}
+  - {{reference_example}}
+- Do not add new required placeholders.
+- The target asset instruction text is editable and should remain directly in the prompt.
+- The code generation rules text is editable and may be improved.
+- Keep the prompt self-contained for a visual language model that receives target RGB, grey, depth, and normal reference images after the text.
+- Keep the requirement that the generator answers with exactly one complete ```python``` code block.
+
+Provide ONLY the complete replacement contents of `evolve_prompt.txt`, with no commentary:

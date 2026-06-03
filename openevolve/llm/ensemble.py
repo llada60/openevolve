@@ -8,6 +8,7 @@ import random
 from typing import Dict, List, Optional, Tuple
 
 from openevolve.llm.base import LLMInterface
+from openevolve.llm.kimi import KimiLLM
 from openevolve.llm.openai import OpenAILLM
 from openevolve.config import LLMModelConfig
 
@@ -22,7 +23,9 @@ class LLMEnsemble:
 
         # Initialize models from the configuration
         self.models = [
-            model_cfg.init_client(model_cfg) if model_cfg.init_client else OpenAILLM(model_cfg)
+            model_cfg.init_client(model_cfg)
+            if model_cfg.init_client
+            else self._build_model(model_cfg)
             for model_cfg in models_cfg
         ]
 
@@ -54,6 +57,12 @@ class LLMEnsemble:
                 )
             )
             logger._ensemble_logged = True
+
+    @staticmethod
+    def _build_model(model_cfg: LLMModelConfig) -> LLMInterface:
+        if model_cfg.name == "kimi2-6":
+            return KimiLLM(model_cfg)
+        return OpenAILLM(model_cfg)
 
     async def generate(self, prompt: str, **kwargs) -> str:
         """Generate text using a randomly selected model based on weights"""

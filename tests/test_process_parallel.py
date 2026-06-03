@@ -84,6 +84,24 @@ def evaluate(program_path):
         self.assertIsNone(controller.executor)
         self.assertTrue(controller.shutdown_event.is_set())
 
+    @patch("openevolve.process_parallel.ProcessPoolExecutor")
+    @patch("openevolve.process_parallel.mp.get_context")
+    def test_controller_start_uses_spawn_context(self, mock_get_context, mock_executor_cls):
+        """Test that the process pool always uses the spawn start method"""
+        controller = ProcessParallelController(self.config, self.eval_file, self.database)
+        spawn_context = MagicMock(name="spawn_context")
+        mock_get_context.return_value = spawn_context
+        mock_executor = MagicMock()
+        mock_executor_cls.return_value = mock_executor
+
+        controller.start()
+
+        mock_get_context.assert_called_once_with("spawn")
+        executor_kwargs = mock_executor_cls.call_args.kwargs
+        self.assertIs(executor_kwargs["mp_context"], spawn_context)
+        self.assertEqual(executor_kwargs["max_workers"], self.config.evaluator.parallel_evaluations)
+        controller.stop()
+
     def test_database_snapshot_creation(self):
         """Test creating database snapshot for workers"""
         controller = ProcessParallelController(self.config, self.eval_file, self.database)
