@@ -9,9 +9,6 @@ max_code_length: 30000
 
 llm:
   api_base: "${OPENEVOLVE_API_BASE}"
-  models:
-    - name: "gpt-4o-mini"
-      weight: 1.0
   temperature: 0.7
   max_tokens: 32768
   timeout: 120
@@ -24,7 +21,7 @@ prompt:
   include_artifacts: true
   system_message: |
     You are an expert prompt engineer optimizing the generator prompt used by a visual language model that writes Blender/Infinigen Python asset code from target render images.
-    Improve the prompt's ability to produce executable, geometrically accurate code while preserving the required text placeholders.
+    Improve the prompt's ability to produce executable, geometrically accurate code. Runtime placeholders are optional; keep only the ones that are useful.
     Return only complete replacement prompt text when asked.
 
 database:

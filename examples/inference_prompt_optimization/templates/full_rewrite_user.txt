@@ -23,12 +23,12 @@ Optimization goals:
 
 Hard constraints:
 - Return only complete replacement prompt text. Do not return a Python module, diff, JSON, Markdown wrapper, or explanation.
-- Keep these exact runtime placeholders unchanged because the fixed Python loader fills them:
+- These runtime placeholders are optional. If you keep any of them, keep the exact spelling so the fixed Python loader can fill them; if your rewritten prompt is self-contained without one or more placeholders, you may omit them:
   - {{num_views}}
   - {{code_skeleton}}
   - {{helper_manual}}
   - {{reference_example}}
-- Do not add new required placeholders.
+- Do not add new required placeholders that the loader does not know how to fill.
 - The target asset instruction text is editable and should remain directly in the prompt.
 - The code generation rules text is editable and may be improved.
 - Keep the prompt self-contained for a visual language model that receives target RGB, grey, depth, and normal reference images after the text.

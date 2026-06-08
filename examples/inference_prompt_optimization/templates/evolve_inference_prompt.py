@@ -14,7 +14,7 @@ from pathlib import Path
 
 EXAMPLE_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_PROMPT_TEXT_PATH = EXAMPLE_DIR / "evolve_prompt.txt"
-REQUIRED_PLACEHOLDERS = (
+OPTIONAL_PLACEHOLDERS = (
     "{num_views}",
     "{code_skeleton}",
     "{helper_manual}",
@@ -55,11 +55,8 @@ def _load_prompt_template() -> str:
 
 
 def _validate_prompt_template(prompt_template: str) -> None:
-    missing = [
-        placeholder for placeholder in REQUIRED_PLACEHOLDERS if placeholder not in prompt_template
-    ]
-    if missing:
-        raise ValueError(f"Prompt template is missing required placeholders: {', '.join(missing)}")
+    if not prompt_template.strip():
+        raise ValueError("Prompt template is empty.")
 
 
 def _num_views(num_views: int | str | None = None) -> str:
@@ -89,12 +86,10 @@ def validate_generator_prompt() -> None:
     prompt = get_generator_prompt()
     if not prompt:
         raise ValueError("Generator prompt is empty.")
-    if "```python" not in prompt:
-        raise ValueError("Generator prompt must require a python code block response.")
 
     unfilled = [
         placeholder
-        for placeholder in REQUIRED_PLACEHOLDERS
+        for placeholder in OPTIONAL_PLACEHOLDERS
         if placeholder in prompt
     ]
     if unfilled:

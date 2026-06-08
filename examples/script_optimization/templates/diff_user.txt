@@ -1,0 +1,32 @@
+# Current Script Information
+- Current performance metrics:
+{metrics}
+- Areas identified for improvement:
+{improvement_areas}
+
+{artifacts}
+
+# Script Evolution History
+{evolution_history}
+
+# Current Python Script
+```python
+{current_program}
+```
+
+# Task
+Suggest targeted SEARCH/REPLACE edits that improve this single Blender/Infinigen asset script.
+
+Optimization goals:
+1. Make the script executable without code-skeleton fallback.
+2. Lower Chamfer distance.
+3. Lower aligned n-CLIP.
+4. Apply concrete visual verifier suggestions when present.
+
+Use only exact SEARCH/REPLACE blocks:
+
+<<<<<<< SEARCH
+# exact existing code
+=======
+# replacement code
+>>>>>>> REPLACE

@@ -1,0 +1,36 @@
+# Current Script Information
+- Current performance metrics:
+{metrics}
+- Areas identified for improvement:
+{improvement_areas}
+
+{artifacts}
+
+# Script Evolution History
+{evolution_history}
+
+# Current Python Script
+```python
+{current_program}
+```
+
+# Task
+Rewrite the entire Python script to improve this single sample's generated 3D asset.
+
+Optimization goals:
+1. Make the script executable in Blender/Infinigen without falling back to `vlm_context/code_skeleton.py`.
+2. Lower Chamfer distance against the target geometry.
+3. Lower aligned n-CLIP against the target render.
+4. Apply concrete visual verifier suggestions when they are present in `sample_feedback`.
+
+Hard constraints:
+- Return only one complete Python code block.
+- Do not modify the generator prompt; this task optimizes only the script above.
+- Preserve the renderer/exporter-compatible `MyAssetFactory` script interface from the current script or bootstrap skeleton.
+- The script should create one coherent target asset object and avoid unrelated scene/camera/light setup unless required by the existing interface.
+- Prefer robust Blender primitives, mesh operations, bevels, curves, transforms, and proportions over fragile external dependencies.
+- Do not read target images, score files, or evaluation artifacts at runtime; use them only as feedback for editing the script.
+
+```python
+# complete rewritten script here
+```

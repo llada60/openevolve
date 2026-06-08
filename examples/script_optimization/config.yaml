@@ -1,0 +1,50 @@
+# OpenEvolve configuration for per-sample generated script optimization.
+
+max_iterations: 30
+checkpoint_interval: 5
+log_level: "INFO"
+language: "python"
+diff_based_evolution: true
+max_code_length: 60000
+
+llm:
+  api_base: "${OPENEVOLVE_API_BASE}"
+  temperature: 0.5
+  max_tokens: 32768
+  timeout: 120
+  retries: 3
+
+prompt:
+  template_dir: "templates"
+  num_top_programs: 2
+  num_diverse_programs: 1
+  include_artifacts: true
+  max_artifact_bytes: 20000
+  system_message: |
+    You are an expert Blender/Infinigen Python engineer optimizing one generated asset script for one fixed target sample.
+    The generator prompt is not part of this task. Improve only the Python script so it runs in Blender, creates exactly one coherent asset object, and better matches the target geometry.
+    Preserve the expected MyAssetFactory-style interface used by the 3D-CoT renderer/exporter.
+
+database:
+  population_size: 20
+  archive_size: 100
+  num_islands: 2
+  feature_dimensions:
+    - "executable"
+    - "chamfer_score"
+    - "n_clip_score"
+    - "code_length"
+    - "uses_factory"
+  feature_bins: 10
+  elite_selection_ratio: 0.4
+  exploration_ratio: 0.3
+  exploitation_ratio: 0.3
+  migration_interval: 10
+  migration_rate: 0.1
+
+evaluator:
+  timeout: 7200
+  max_retries: 0
+  parallel_evaluations: 1
+  cascade_evaluation: false
+  use_llm_feedback: false
