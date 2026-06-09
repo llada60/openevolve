@@ -51,6 +51,15 @@ def parse_args() -> argparse.Namespace:
         default=None,
     )
 
+    parser.add_argument(
+        "--checkpoint-interval",
+        "--checkpoint_interval",
+        dest="checkpoint_interval",
+        help="Save a checkpoint every N completed iterations",
+        type=int,
+        default=None,
+    )
+
     parser.add_argument("--api-base", help="Base URL for the LLM API", default=None)
 
     parser.add_argument("--primary-model", help="Primary LLM model name", default=None)
@@ -95,6 +104,13 @@ async def main_async() -> int:
         if args.secondary_model:
             config.llm.secondary_model = args.secondary_model
             print(f"Using secondary model: {config.llm.secondary_model}")
+
+    if args.checkpoint_interval is not None:
+        if args.checkpoint_interval <= 0:
+            print("Error: --checkpoint-interval must be positive")
+            return 1
+        config.checkpoint_interval = args.checkpoint_interval
+        print(f"Using checkpoint interval: {config.checkpoint_interval}")
 
         # Rebuild models list to apply CLI overrides
         if args.primary_model or args.secondary_model:

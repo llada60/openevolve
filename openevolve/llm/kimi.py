@@ -108,7 +108,6 @@ class KimiLLM(LLMInterface):
             "system": system_message or self.system_message,
             "messages": payload_messages,
             "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-            "thinking": {"type": "enabled"},
         }
         temperature = kwargs.get("temperature", self.temperature)
         if temperature is not None:
@@ -145,22 +144,9 @@ class KimiLLM(LLMInterface):
 
     async def _call_api(self, params: Dict[str, Any]) -> str:
         loop = asyncio.get_event_loop()
-        try:
-            response = await loop.run_in_executor(
-                None, lambda: self.client.messages.create(**params)
-            )
-        except TypeError as exc:
-            if "thinking" not in str(exc):
-                raise
-            fallback_params = dict(params)
-            fallback_params.pop("thinking", None)
-            logger.warning(
-                "Kimi client does not support the 'thinking' parameter. "
-                "Retrying request without it."
-            )
-            response = await loop.run_in_executor(
-                None, lambda: self.client.messages.create(**fallback_params)
-            )
+        response = await loop.run_in_executor(
+            None, lambda: self.client.messages.create(**params)
+        )
         content = self._combine_text_blocks(getattr(response, "content", None))
         if content is None:
             raise ValueError(

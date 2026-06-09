@@ -445,7 +445,7 @@ class OpenEvolve:
         Copy evaluator cache entries for checkpoint programs into the checkpoint.
 
         3D-CoT's inference prompt evaluator stores candidate evaluation artifacts
-        under EVOLVE_INFERENCE_CACHE_DIR/<sha256(program.code)[:16]>/.
+        under a cache key derived from the prompt text and EVOLVE_INFERENCE_* runtime signature.
         """
         cache_root = os.environ.get("EVOLVE_INFERENCE_CACHE_DIR")
         if not cache_root:
@@ -464,29 +464,34 @@ class OpenEvolve:
 
         index = {
             "source_cache_root": str(cache_root_path),
-            "hash_algorithm": "sha256(program.code)[:16]",
+            "hash_algorithm": "sha256(prompt + EVOLVE_INFERENCE_* runtime signature)[:16]",
             "entries": [],
         }
         copied_count = 0
 
         for program in self.database.programs.values():
             prompt_hash = hashlib.sha256(program.code.encode("utf-8")).hexdigest()[:16]
-            candidate_sources = [cache_root_path / prompt_hash]
+            cache_key = prompt_hash
+            candidate_sources = []
             if program.artifacts_json:
                 try:
                     artifacts = json.loads(program.artifacts_json)
                     metadata_path = artifacts.get("metadata_path")
                     if metadata_path:
                         artifact_cache_dir = Path(metadata_path).expanduser().resolve().parent.parent
-                        if artifact_cache_dir.name == prompt_hash:
-                            candidate_sources.append(artifact_cache_dir)
+                        cache_key = artifact_cache_dir.name
+                        candidate_sources.append(artifact_cache_dir)
                 except (TypeError, ValueError, OSError):
                     logger.debug(f"Could not parse artifact cache path for program {program.id}")
+            candidate_sources.append(cache_root_path / cache_key)
+            if cache_key != prompt_hash:
+                candidate_sources.append(cache_root_path / prompt_hash)
 
-            dst = dest_root / prompt_hash
+            dst = dest_root / cache_key
             entry = {
                 "program_id": program.id,
                 "prompt_hash": prompt_hash,
+                "cache_key": cache_key,
                 "source": str(candidate_sources[0]),
                 "candidate_sources": [str(src) for src in candidate_sources],
                 "destination": str(dst),

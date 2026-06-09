@@ -21,6 +21,50 @@ from openevolve.utils.metrics_utils import safe_numeric_average
 logger = logging.getLogger(__name__)
 
 
+FATAL_LLM_LIMIT_MARKERS = (
+    "rate limit",
+    "rate_limit",
+    "429",
+    "530",
+    "cloudflare",
+    "cloudflare_error",
+    "tunnel_error",
+    "error 1033",
+    "quota",
+    "insufficient_quota",
+    "billing",
+    "credit balance",
+    "credits exhausted",
+    "resource_exhausted",
+    "context length",
+    "context_length_exceeded",
+    "maximum context",
+    "maximum token",
+    "max tokens",
+    "too many tokens",
+    "token limit",
+    "prompt is too long",
+    "input length",
+    "response_limit",
+    "fatal_llm_query_failure",
+    "fatal_llm_response_limit",
+    "llm querying failed",
+)
+
+
+def _is_fatal_llm_limit_error(message: Optional[str]) -> bool:
+    if not message:
+        return False
+    lowered = message.lower()
+    if (
+        "llm generation failed" not in lowered
+        and "llm querying failed" not in lowered
+        and "fatal_llm" not in lowered
+    ):
+        return False
+    return any(marker in lowered for marker in FATAL_LLM_LIMIT_MARKERS)
+
+
 @dataclass
 class SerializableResult:
     """Result that can be pickled and sent between processes"""
@@ -352,6 +396,7 @@ class ProcessParallelController:
         self.executor: Optional[ProcessPoolExecutor] = None
         self.shutdown_event = mp.Event()
         self.early_stopping_triggered = False
+        self.fatal_error: Optional[str] = None
 
         # Number of worker processes
         self.num_workers = config.evaluator.parallel_evaluations
@@ -556,6 +601,16 @@ class ProcessParallelController:
 
                 if result.error:
                     logger.warning(f"Iteration {completed_iteration} error: {result.error}")
+                    if _is_fatal_llm_limit_error(result.error):
+                        self.fatal_error = result.error
+                        logger.error(
+                            "Fatal LLM limit detected at iteration %s; saving checkpoint and stopping evolution.",
+                            completed_iteration,
+                        )
+                        if checkpoint_callback and self.database.programs:
+                            checkpoint_callback(self.database.last_iteration)
+                        self.shutdown_event.set()
+                        break
                 elif result.child_program_dict:
                     # Reconstruct program from dict
                     child_program = Program(**result.child_program_dict)
@@ -783,6 +838,9 @@ class ProcessParallelController:
             logger.info("Shutdown requested, canceling remaining evaluations...")
             for future in pending_futures.values():
                 future.cancel()
+
+        if self.fatal_error:
+            raise RuntimeError(self.fatal_error)
 
         # Log completion reason
         if self.early_stopping_triggered:

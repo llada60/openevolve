@@ -34,6 +34,7 @@ database:
     - "reasoning_strategy"
     - "chamfer_score"
     - "n_clip_score"
+    - "vlm_verifier"
   feature_bins: 10
   elite_selection_ratio: 0.4
   exploration_ratio: 0.3

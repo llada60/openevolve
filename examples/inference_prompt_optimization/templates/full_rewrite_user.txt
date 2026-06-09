@@ -20,6 +20,7 @@ Optimization goals:
 2. Improve geometry: lower Chamfer distance after 3D alignment.
 3. Improve aligned render similarity: lower n-CLIP / higher visual similarity.
 4. Improve VLM verifier score.
+5. When `sample_feedback` is present in the artifacts, prioritize actionable prompt issues such as parse failures, missing factory interface, helper-scope violations, Blender runtime errors, and verifier guidance.
 
 Hard constraints:
 - Return only complete replacement prompt text. Do not return a Python module, diff, JSON, Markdown wrapper, or explanation.
@@ -33,5 +34,6 @@ Hard constraints:
 - The code generation rules text is editable and may be improved.
 - Keep the prompt self-contained for a visual language model that receives target RGB, grey, depth, and normal reference images after the text.
 - Keep the requirement that the generator answers with exactly one complete ```python``` code block.
+- Do not rewrite the prompt to address `model_backend_error_non_actionable`; fix backend/API/model alias issues outside the prompt.
 
 Provide ONLY the complete replacement contents of `evolve_prompt.txt`, with no commentary:

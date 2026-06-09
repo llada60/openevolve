@@ -68,6 +68,29 @@ GEOMETRY_CHAMFER_KEYS = (
     "aligned_go_icp_chamfer",
     "aligned_icp_chamfer",
 )
+FATAL_LLM_ERROR_MARKERS = (
+    "fatal_llm_query_failure",
+    "fatal_llm_response_limit",
+    "llm querying failed",
+    "rate limit",
+    "quota",
+    "429",
+    "530",
+    "cloudflare",
+    "cloudflare_error",
+    "tunnel_error",
+    "error 1033",
+    "context length",
+    "maximum context",
+    "token limit",
+    "too many tokens",
+)
+
+SAMPLE_FEEDBACK_MAX_CHARS = 12_000
+FAILED_RESPONSE_EXCERPT_CHARS = 1_500
+FAILED_SCRIPT_EXCERPT_CHARS = 2_000
+MAX_REPRESENTATIVE_FAILURES = 5
+MAX_NON_EXECUTABLE_DETAILS = 5
 
 
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -83,6 +106,11 @@ def _env_int(name: str, default: int) -> int:
 def _env_float(name: str, default: float) -> float:
     value = _env(name)
     return float(value) if value is not None else default
+
+
+def _is_fatal_llm_error(exc: BaseException) -> bool:
+    lowered = str(exc).lower()
+    return any(marker in lowered for marker in FATAL_LLM_ERROR_MARKERS)
 
 
 def _cache_root() -> Path:
@@ -104,7 +132,19 @@ def _load_candidate_prompt(program_path: str) -> str:
 
 def _candidate_hash(program_path: str) -> str:
     prompt = _load_candidate_prompt(program_path)
-    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
+    signature = {
+        "prompt": prompt,
+        "generator_type": _env("EVOLVE_INFERENCE_GENERATOR_TYPE"),
+        "data_path": str(Path(_env("EVOLVE_INFERENCE_DATA_PATH", "")).expanduser().resolve()),
+        "task": _env("EVOLVE_INFERENCE_TASK", "test"),
+        "sample_num": _env("EVOLVE_INFERENCE_SAMPLE_NUM"),
+        "image_input_mode": _env("EVOLVE_INFERENCE_IMAGE_INPUT_MODE", "rgb_geometry"),
+        "num_input_views": _env("EVOLVE_INFERENCE_NUM_INPUT_VIEWS", "1"),
+        "render_device": _env("EVOLVE_INFERENCE_RENDER_DEVICE", "auto"),
+        "verifier_type": _env("EVOLVE_INFERENCE_VERIFIER_TYPE"),
+    }
+    payload = json.dumps(signature, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def _candidate_cache_dir(program_path: str) -> Path:
@@ -408,6 +448,275 @@ def _geometry_entries(metadata: Mapping[str, Any]) -> Dict[str, Any]:
     return metadata.get("geometry", {}) if isinstance(metadata.get("geometry"), dict) else {}
 
 
+def _truncate_text(value: Any, max_chars: int) -> str:
+    text = str(value) if value is not None else ""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n... (truncated)"
+
+
+def _read_text_excerpt(path_value: Any, max_chars: int) -> str:
+    if not path_value:
+        return ""
+    path = _resolve_project_path(str(path_value)).expanduser()
+    if not path.is_file():
+        return f"<missing file: {path_value}>"
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as file:
+            return _truncate_text(file.read(max_chars + 1), max_chars)
+    except Exception as exc:
+        return f"<failed to read {path}: {type(exc).__name__}: {exc}>"
+
+
+def _first_existing_path(values: Iterable[Any]) -> Optional[str]:
+    for value in values:
+        if not value:
+            continue
+        path = _resolve_project_path(str(value)).expanduser()
+        if path.is_file():
+            return str(path)
+    return None
+
+
+def _extract_failed_response_excerpt(instance_info: Mapping[str, Any]) -> str:
+    path_value = _first_existing_path(instance_info.get("failed_response_paths") or [])
+    if not path_value:
+        return ""
+    try:
+        payload = _load_json(path_value)
+    except Exception:
+        return _read_text_excerpt(path_value, FAILED_RESPONSE_EXCERPT_CHARS)
+
+    lines = []
+    if isinstance(payload, Mapping):
+        for key in (
+            "error",
+            "raw_response",
+            "parsed_code",
+            "reasoning_process",
+            "explicit_reasoning_output",
+            "subprocess.complete_response",
+            "subprocess.stderr",
+            "subprocess.stdout",
+        ):
+            value = payload.get(key)
+            if value:
+                lines.append(f"{key}: {_truncate_text(value, FAILED_RESPONSE_EXCERPT_CHARS)}")
+                break
+    else:
+        lines.append(_truncate_text(payload, FAILED_RESPONSE_EXCERPT_CHARS))
+    return "\n".join(lines)
+
+
+def _extract_failed_script_excerpt(instance_info: Mapping[str, Any]) -> str:
+    path_value = _first_existing_path(
+        [
+            *(instance_info.get("failed_scripts") or []),
+            *(instance_info.get("failed_script_paths") or []),
+            instance_info.get("failed_script"),
+            instance_info.get("failed_script_path"),
+        ]
+    )
+    if not path_value:
+        return ""
+    return _read_text_excerpt(path_value, FAILED_SCRIPT_EXCERPT_CHARS)
+
+
+def _classify_error(text: str) -> str:
+    lowered = text.lower()
+    if not lowered.strip():
+        return "unknown_failure"
+    if "api_error_status" in lowered or "404" in lowered and "model" in lowered:
+        return "model_backend_error_non_actionable"
+    if "not logged in" in lowered or "api key" in lowered or "permission" in lowered:
+        return "model_backend_error_non_actionable"
+    if "response_limit" in lowered or "maximum context" in lowered or "context length" in lowered:
+        return "response_limit"
+    if "```python" in lowered or "code block" in lowered:
+        return "missing_python_code_block"
+    if "did not contain" in lowered and "code" in lowered:
+        return "no_parseable_code"
+    if "parse" in lowered and "code" in lowered:
+        return "no_parseable_code"
+    if "myassetfactory" in lowered or "create_asset" in lowered or "spawn_asset" in lowered:
+        return "missing_factory_interface"
+    if "helper" in lowered and ("not listed" in lowered or "not allowed" in lowered):
+        return "helper_scope_violation"
+    if "infinigen.assets" in lowered or "importerror" in lowered or "modulenotfounderror" in lowered:
+        return "helper_scope_violation"
+    if "blender" in lowered or "bpy" in lowered or "traceback" in lowered or "runtimeerror" in lowered:
+        return "blender_runtime_error"
+    return "unknown_failure"
+
+
+def _actionable_guidance(categories: Iterable[str]) -> List[str]:
+    category_set = set(categories)
+    guidance = []
+    if "missing_python_code_block" in category_set or "no_parseable_code" in category_set:
+        guidance.append("Make the prompt demand exactly one complete parseable Python code block and no surrounding prose.")
+    if "missing_factory_interface" in category_set:
+        guidance.append("Reinforce the required MyAssetFactory/create_asset interface and one returned Blender object.")
+    if "helper_scope_violation" in category_set:
+        guidance.append("Emphasize using only helpers from helper_manual and never importing infinigen.assets.*.")
+    if "blender_runtime_error" in category_set:
+        guidance.append("Add stricter Blender runtime safety: valid imports, explicit object creation, deterministic transforms, and no scene assumptions.")
+    if "response_limit" in category_set:
+        guidance.append("Shorten or simplify the generator prompt to reduce response-length failures.")
+    if "model_backend_error_non_actionable" in category_set:
+        guidance.append("Ignore model/backend/API failures when rewriting the prompt; fix runtime model configuration separately.")
+    if not guidance:
+        guidance.append("Improve executable asset generation while preserving clear geometry reasoning and output constraints.")
+    return guidance
+
+
+def _instance_error_text(instance_info: Mapping[str, Any]) -> str:
+    parts = []
+    if instance_info.get("error"):
+        parts.append(str(instance_info["error"]))
+    failed_response_excerpt = _extract_failed_response_excerpt(instance_info)
+    if failed_response_excerpt:
+        parts.append(failed_response_excerpt)
+    return "\n".join(parts)
+
+
+def _representative_failures(metadata: Mapping[str, Any]) -> Tuple[List[Dict[str, str]], Dict[str, int]]:
+    representatives: List[Dict[str, str]] = []
+    category_counts: Dict[str, int] = {}
+    seen_categories = set()
+    overflow: List[Dict[str, str]] = []
+
+    for task_instance, instance_info in _geometry_entries(metadata).items():
+        if instance_info.get("proposal_edits_paths") or instance_info.get("selected_edit_path"):
+            continue
+        error_text = _instance_error_text(instance_info)
+        script_excerpt = _extract_failed_script_excerpt(instance_info)
+        category = _classify_error("\n".join([error_text, script_excerpt]))
+        category_counts[category] = category_counts.get(category, 0) + 1
+        item = {
+            "task_instance": str(task_instance),
+            "category": category,
+            "error_excerpt": _truncate_text(error_text, 1800),
+            "failed_script_excerpt": _truncate_text(script_excerpt, 2200),
+        }
+        if category not in seen_categories and len(representatives) < MAX_REPRESENTATIVE_FAILURES:
+            representatives.append(item)
+            seen_categories.add(category)
+        else:
+            overflow.append(item)
+
+    for item in overflow:
+        if len(representatives) >= MAX_REPRESENTATIVE_FAILURES:
+            break
+        representatives.append(item)
+    return representatives, category_counts
+
+
+def _load_geometry_summary_from_artifacts(artifacts: Mapping[str, str]) -> Dict[str, Any]:
+    eval_dir = artifacts.get("eval_dir")
+    if not eval_dir:
+        return {}
+    summary_path = Path(eval_dir).expanduser() / "geometry_scores_3d.json"
+    if not summary_path.is_file():
+        return {}
+    try:
+        return _load_json(str(summary_path))
+    except Exception:
+        return {}
+
+
+def _build_sample_feedback(
+    metadata: Optional[Mapping[str, Any]],
+    artifacts: Optional[Mapping[str, str]] = None,
+    geometry_summary: Optional[Mapping[str, Any]] = None,
+) -> str:
+    artifacts = artifacts or {}
+    geometry_summary = geometry_summary or {}
+    entries = _geometry_entries(metadata or {})
+    successful = 0
+    for instance_info in entries.values():
+        if instance_info.get("proposal_edits_paths") or instance_info.get("selected_edit_path"):
+            successful += 1
+    total = len(entries)
+    representatives, category_counts = _representative_failures(metadata or {})
+
+    lines = [
+        "stage1_summary:",
+        f"successful_instances: {successful}/{total}",
+        f"failed_instances: {max(0, total - successful)}",
+    ]
+
+    if category_counts:
+        lines.append("\nerror_categories:")
+        for category, count in sorted(category_counts.items()):
+            lines.append(f"- {category}: {count}")
+
+    non_exec_details = geometry_summary.get("non_executable_details") or []
+    if non_exec_details:
+        lines.append("\nstage2_non_executable_details:")
+        for detail in non_exec_details[:MAX_NON_EXECUTABLE_DETAILS]:
+            lines.append(_truncate_text(json.dumps(detail, ensure_ascii=False), 1200))
+
+    if representatives:
+        lines.append("\nrepresentative_failures:")
+        for item in representatives:
+            lines.append(f"\n[{item['task_instance']}]")
+            lines.append(f"category: {item['category']}")
+            if item["error_excerpt"]:
+                lines.append("error_excerpt:")
+                lines.append(item["error_excerpt"])
+            if item["failed_script_excerpt"]:
+                lines.append("failed_script_excerpt:")
+                lines.append(item["failed_script_excerpt"])
+    elif total:
+        lines.append("\nrepresentative_failures: none; all sampled instances produced proposal scripts.")
+    else:
+        lines.append("\nrepresentative_failures: none; no geometry entries were found.")
+
+    if artifacts.get("vlm_verifier_status"):
+        lines.append("\nverifier_feedback:")
+        lines.append(f"vlm_verifier_status: {artifacts['vlm_verifier_status']}")
+        if artifacts.get("vlm_verifier_zero_scored_instances"):
+            lines.append(
+                "vlm_verifier_zero_scored_instances: "
+                + _truncate_text(artifacts["vlm_verifier_zero_scored_instances"], 1200)
+            )
+        if artifacts.get("vlm_verifier_raw"):
+            lines.append("vlm_verifier_raw_excerpt:")
+            lines.append(_truncate_text(artifacts["vlm_verifier_raw"], 1800))
+
+    stage_errors = {
+        key: value for key, value in artifacts.items()
+        if key in ("stage1_error", "stage2_error", "stage3_error", "stage3_skipped")
+    }
+    if stage_errors:
+        lines.append("\nstage_errors:")
+        for key, value in stage_errors.items():
+            lines.append(f"{key}: {_truncate_text(value, 1200)}")
+
+    all_categories = list(category_counts)
+    for value in stage_errors.values():
+        all_categories.append(_classify_error(str(value)))
+    lines.append("\nactionable_prompt_guidance:")
+    for guidance in _actionable_guidance(all_categories):
+        lines.append(f"- {guidance}")
+
+    return _truncate_text("\n".join(lines), SAMPLE_FEEDBACK_MAX_CHARS)
+
+
+def _sample_feedback_artifacts(context: Mapping[str, str]) -> Dict[str, str]:
+    metadata = None
+    metadata_path = context.get("metadata_path")
+    if metadata_path and Path(metadata_path).is_file():
+        try:
+            metadata = _load_json(metadata_path)
+        except Exception:
+            metadata = None
+    geometry_summary = _load_geometry_summary_from_artifacts(context)
+    return {
+        "sample_feedback": _build_sample_feedback(metadata, context, geometry_summary),
+    }
+
+
 def _executable_fraction(metadata: Mapping[str, Any]) -> Tuple[float, int, int]:
     entries = _geometry_entries(metadata)
     if not entries:
@@ -440,7 +749,7 @@ def _stage1_metrics(program_path: str) -> Tuple[Dict[str, float], Dict[str, str]
         "successful_instances": str(successful),
         "total_instances": str(total),
     }
-    return metrics, artifacts
+    return metrics, _sample_feedback_artifacts(artifacts)
 
 
 def _failure_stage1_metrics(program_path: str) -> Dict[str, float]:
@@ -461,9 +770,12 @@ def evaluate_stage1(program_path: str) -> EvaluationResult:
         metrics, artifacts = _stage1_metrics(program_path)
         return EvaluationResult(metrics=metrics, artifacts=artifacts)
     except Exception as exc:
+        if _is_fatal_llm_error(exc):
+            raise
+        artifacts = _sample_feedback_artifacts({"stage1_error": f"{type(exc).__name__}: {exc}"})
         return EvaluationResult(
             metrics=_failure_stage1_metrics(program_path),
-            artifacts={"stage1_error": f"{type(exc).__name__}: {exc}"},
+            artifacts=artifacts,
         )
 
 
@@ -550,7 +862,7 @@ def _evaluate_3d(program_path: str) -> Tuple[Dict[str, float], Dict[str, str]]:
         "successful_instances": str(successful),
         "total_instances": str(total),
     }
-    return metrics, artifacts
+    return metrics, _sample_feedback_artifacts(artifacts)
 
 
 def evaluate_stage2(program_path: str) -> EvaluationResult:
@@ -558,9 +870,13 @@ def evaluate_stage2(program_path: str) -> EvaluationResult:
         metrics, artifacts = _evaluate_3d(program_path)
         return EvaluationResult(metrics=metrics, artifacts=artifacts)
     except Exception as exc:
+        if _is_fatal_llm_error(exc):
+            raise
         try:
             metrics, artifacts = _stage1_metrics(program_path)
         except Exception as stage1_exc:
+            if _is_fatal_llm_error(stage1_exc):
+                raise
             metrics = _failure_stage1_metrics(program_path)
             artifacts = {"stage1_error": f"{type(stage1_exc).__name__}: {stage1_exc}"}
         metrics["stage2_passed"] = 0.0
@@ -568,7 +884,7 @@ def evaluate_stage2(program_path: str) -> EvaluationResult:
         for key, value in _zero_downstream_metrics().items():
             metrics.setdefault(key, value)
         artifacts["stage2_error"] = f"{type(exc).__name__}: {exc}"
-        return EvaluationResult(metrics=metrics, artifacts=artifacts)
+        return EvaluationResult(metrics=metrics, artifacts=_sample_feedback_artifacts(artifacts))
 
 
 class VisualSimilarityScore(ParsedAnswer):
@@ -720,7 +1036,7 @@ def _evaluate_stage3_from_stage2(program_path: str, stage2_result: EvaluationRes
         stage2_metrics["vlm_verifier"] = 0.0
         stage2_metrics["combined_score"] = 0.0
         stage2_artifacts["stage3_skipped"] = "stage2 did not pass"
-        return EvaluationResult(metrics=stage2_metrics, artifacts=stage2_artifacts)
+        return EvaluationResult(metrics=stage2_metrics, artifacts=_sample_feedback_artifacts(stage2_artifacts))
 
     try:
         vlm_score, vlm_artifacts = _verifier_scores(program_path)
@@ -729,7 +1045,7 @@ def _evaluate_stage3_from_stage2(program_path: str, stage2_result: EvaluationRes
         stage2_metrics["stage3_passed"] = 0.0
         stage2_metrics["combined_score"] = 0.0
         stage2_artifacts["stage3_error"] = f"{type(exc).__name__}: {exc}"
-        return EvaluationResult(metrics=stage2_metrics, artifacts=stage2_artifacts)
+        return EvaluationResult(metrics=stage2_metrics, artifacts=_sample_feedback_artifacts(stage2_artifacts))
 
     executable = stage2_metrics.get("executable", 0.0)
     chamfer_score = stage2_metrics.get("chamfer_score", 0.0)
@@ -743,7 +1059,7 @@ def _evaluate_stage3_from_stage2(program_path: str, stage2_result: EvaluationRes
     )
     stage2_metrics["combined_score"] = stage2_metrics["stage3_passed"]
     stage2_artifacts.update(vlm_artifacts)
-    return EvaluationResult(metrics=stage2_metrics, artifacts=stage2_artifacts)
+    return EvaluationResult(metrics=stage2_metrics, artifacts=_sample_feedback_artifacts(stage2_artifacts))
 
 
 def evaluate_stage3(program_path: str) -> EvaluationResult:
